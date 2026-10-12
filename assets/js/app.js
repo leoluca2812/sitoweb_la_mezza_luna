@@ -17,28 +17,28 @@ function getGridColumns() {
 }
 
 async function loadProducts() {
-    const cachedData = localStorage.getItem('la_mezza_luna_products');
-    const cachedTime = localStorage.getItem('la_mezza_luna_products_time');
+    const cachedData = localStorage.getItem('la_mezza_luna_products_v3');
+    const cachedTime = localStorage.getItem('la_mezza_luna_products_time_v3');
     const now = Date.now();
 
     if (cachedData && cachedTime) {
         try {
             products = JSON.parse(cachedData);
             renderProductGrid();
-            
+
             // Se la cache è più recente di 5 minuti, non facciamo richieste di rete aggiuntive
             if (now - parseInt(cachedTime) < 5 * 60 * 1000) {
                 console.log("Prodotti caricati da cache locale fresca.");
                 return;
             }
-            
+
             console.log("Cache locale scaduta. Avvio aggiornamento prodotti in background...");
             fetchProducts(true);
             return;
         } catch (e) {
             console.error("Errore nel parsing della cache dei prodotti, la rimuovo:", e);
-            localStorage.removeItem('la_mezza_luna_products');
-            localStorage.removeItem('la_mezza_luna_products_time');
+            localStorage.removeItem('la_mezza_luna_products_v3');
+            localStorage.removeItem('la_mezza_luna_products_time_v3');
         }
     }
 
@@ -56,23 +56,40 @@ async function fetchProducts(isBackground = false) {
 
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.text();
-        const rows = data.split('\n').slice(1);
+        const lines = data.split('\n');
+        if (lines.length < 2) return;
 
+        // Parse headers to dynamically find column indices
+        const headers = lines[0].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.replace(/"/g, '').trim().toLowerCase());
+        const nameIdx = headers.findIndex(h => h.includes('prodotto') || h.includes('nome'));
+        const priceIdx = headers.findIndex(h => h.includes('prezzo'));
+        const unitIdx = headers.findIndex(h => h.includes('unit') || h.includes('unità'));
+        const availableIdx = headers.findIndex(h => h.includes('disponibil'));
+
+        // Fallback to original indices if headers are missing
+        const idxName = nameIdx !== -1 ? nameIdx : 0;
+        const idxPrice = priceIdx !== -1 ? priceIdx : 2;
+        const idxUnit = unitIdx !== -1 ? unitIdx : 3;
+        const idxAvailable = availableIdx !== -1 ? availableIdx : 4;
+
+        const rows = lines.slice(1);
         const parsedProducts = [];
         rows.forEach((row, index) => {
             const cols = row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-            if (cols.length < 3) return;
+            if (cols.length <= Math.max(idxName, idxPrice)) return;
+
+            const name = (cols[idxName] || "").replace(/"/g, '').trim();
 
             const p = {
                 id: index,
-                name: (cols[0] || "").replace(/"/g, '').trim(),
-                price: parseFloat(cols[2]),
-                unit: (cols[3] || "").trim(),
-                available: (cols[4] || "").trim().toUpperCase() === 'SÌ' || (cols[4] || "").trim().toUpperCase() === 'SI',
-                img: cols[5] ? cols[5].trim() : 'https://placehold.co/150x150?text=Verdura'
+                name: name,
+                price: parseFloat(cols[idxPrice]),
+                unit: (cols[idxUnit] || "").trim(),
+                available: (cols[idxAvailable] || "").trim().toUpperCase() === 'SÌ' || (cols[idxAvailable] || "").trim().toUpperCase() === 'SI',
+                img: `/prodotti/${index + 2}.jpg`
             };
 
-            if (p.available) parsedProducts.push(p);
+            if (p.name && p.available) parsedProducts.push(p);
         });
 
         // Controlla se i dati del catalogo sono effettivamente cambiati
@@ -101,13 +118,13 @@ async function fetchProducts(isBackground = false) {
         }
 
         // Salva sempre i dati aggiornati nella cache locale
-        localStorage.setItem('la_mezza_luna_products', JSON.stringify(parsedProducts));
-        localStorage.setItem('la_mezza_luna_products_time', Date.now().toString());
+        localStorage.setItem('la_mezza_luna_products_v3', JSON.stringify(parsedProducts));
+        localStorage.setItem('la_mezza_luna_products_time_v3', Date.now().toString());
 
     } catch (error) {
         clearTimeout(timeoutId);
         console.error("Errore durante il fetch dei prodotti:", error);
-        
+
         // Se il fetch fallisce e non abbiamo nessun prodotto caricato (nemmeno da cache), mostra l'errore a schermo
         if (!isBackground && products.length === 0) {
             const container = document.getElementById('product-list');
@@ -144,7 +161,7 @@ function renderProductGrid() {
     if (products.length === 0) return;
 
     const container = document.getElementById('product-list');
-    
+
     if (isExpanded) {
         container.innerHTML = products.map(p => renderProductCard(p)).join('');
         const btnShowAll = document.getElementById('btn-show-all');
@@ -153,12 +170,12 @@ function renderProductGrid() {
     }
 
     const cols = getGridColumns();
-    
+
     if (cols === 1) {
         initialLimit = 3;
     } else {
         const fullRowsPossible = Math.floor(products.length / cols);
-        
+
         if (fullRowsPossible >= 2) {
             initialLimit = cols * 2;
         } else if (fullRowsPossible === 1) {
@@ -181,9 +198,9 @@ function showAllProducts() {
     isExpanded = true;
     const container = document.getElementById('product-list');
     const remainingProducts = products.slice(initialLimit);
-    
+
     container.insertAdjacentHTML('beforeend', remainingProducts.map(p => renderProductCard(p)).join(''));
-    
+
     document.getElementById('btn-show-all').style.display = 'none';
 }
 
@@ -191,9 +208,11 @@ function showAllProducts() {
 function renderProductCard(p) {
     const qty = cart[p.id] || 0;
     const displayQty = (qty % 1 === 0) ? qty : qty.toFixed(1);
+    const rowNumber = p.id + 2;
+    const escapedName = p.name.replace(/'/g, "\\'");
     return `
         <div class="card">
-            <img src="${p.img}" alt="${p.name}" loading="lazy" onerror="this.onerror=null; this.src='https://placehold.co/150x150?text=Immagine+non+disponibile'; updateProductImageFallback(${p.id});">
+            <img src="${p.img}" alt="${p.name}" loading="lazy" onerror="handleImageError(this, ${p.id}, '${escapedName}', ${rowNumber}, 1)">
             <h3>${p.name}</h3>
             <div class="price">${p.price.toFixed(2)}€ / ${p.unit}</div>
             <div class="controls">
@@ -216,7 +235,7 @@ function renderProductCard(p) {
 function startChange(id, direction) {
     const now = Date.now();
     const currentTarget = `${id}-${direction}`;
-    
+
     if (now - lastClickTime < 300 && lastTarget === currentTarget) {
         rapidClickCount++;
     } else {
@@ -226,13 +245,16 @@ function startChange(id, direction) {
     lastClickTime = now;
     lastTarget = currentTarget;
 
-    const step = (rapidClickCount >= 3) ? 0.5 : 0.1;
+    const product = products.find(p => p.id === id);
+    const isDiscrete = product && product.unit.toLowerCase().trim() !== 'kg';
+
+    const step = isDiscrete ? 1 : ((rapidClickCount >= 3) ? 0.5 : 0.1);
     applyChange(id, direction * step);
 
     stopChange();
     pressTimer = setTimeout(() => {
         pressInterval = setInterval(() => {
-            applyChange(id, direction * 0.5);
+            applyChange(id, direction * (isDiscrete ? 1 : 0.5));
         }, 150);
     }, 500);
 }
@@ -244,10 +266,14 @@ function stopChange() {
 
 function applyChange(id, delta) {
     if (!cart[id]) cart[id] = 0;
-    let newQty = parseFloat((cart[id] + delta).toFixed(1));
+
+    const product = products.find(p => p.id === id);
+    const isDiscrete = product && product.unit.toLowerCase().trim() !== 'kg';
+
+    let newQty = parseFloat((cart[id] + delta).toFixed(isDiscrete ? 0 : 1));
     if (newQty < 0) newQty = 0;
     cart[id] = newQty;
-    
+
     const qtyElement = document.getElementById(`qty-${id}`);
     if (qtyElement) {
         qtyElement.innerText = (newQty % 1 === 0) ? newQty : newQty.toFixed(1);
@@ -332,7 +358,7 @@ function initModal() {
         </div>
     `;
     document.body.insertAdjacentHTML('beforeend', modalHtml);
-    
+
     if (!localStorage.getItem('cookie-consent')) {
         document.getElementById('cookie-banner').style.display = 'flex';
     }
@@ -366,11 +392,11 @@ function executeClearCache() {
     // Svuota localStorage e sessionStorage
     localStorage.clear();
     sessionStorage.clear();
-    
+
     // Svuota cookies per l'origine corrente
     try {
-        document.cookie.split(";").forEach(function(c) { 
-            document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/"); 
+        document.cookie.split(";").forEach(function (c) {
+            document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/");
         });
     } catch (e) {
         console.error("Errore nello svuotamento dei cookie:", e);
@@ -439,10 +465,10 @@ function confirmAndSend() {
     }
 
     currentOrderText = `Ciao! Vorrei prenotare questi prodotti:\n\n${orderList.trim()}\n\n*TOTALE: ${total.toFixed(2)}€*`;
-    
+
     document.getElementById('modal-order-details').innerText = orderList;
     document.getElementById('modal-order-total').innerText = `${total.toFixed(2)}€`;
-    
+
     document.getElementById('summary-step').style.display = 'block';
     document.getElementById('address-step').style.display = 'none';
     document.getElementById('btn-proceed').style.display = 'block';
@@ -461,7 +487,7 @@ function showAddressStep() {
     document.getElementById('wa-send-btn').style.display = 'block';
 
     const addressInput = document.getElementById('delivery-address');
-    
+
     if (!addressInput.value) {
         const savedAddress = localStorage.getItem('deliveryAddress');
         if (savedAddress) addressInput.value = savedAddress;
@@ -482,13 +508,13 @@ function prepareWAMessage(event) {
     localStorage.setItem('deliveryAddress', address);
 
     let finalMessage = `${currentOrderText.trim()}\n\n*Indirizzo di consegna:*\n${address}`;
-    
+
     if (notes) {
         finalMessage += `\n\n*Note:*\n${notes}`;
     }
 
     const waLink = `https://wa.me/${AppConfig.phoneNumber}?text=${encodeURIComponent(finalMessage)}`;
-    
+
     event.preventDefault();
     window.open(waLink, '_blank');
 
@@ -516,14 +542,36 @@ document.addEventListener("DOMContentLoaded", () => {
     loadProducts();
 });
 
-function updateProductImageFallback(id) {
+function handleImageError(imgElement, productId, productName, rowNumber, attempt) {
+    const extensions = ['jpg', 'jpeg', 'png', 'webp'];
+    if (attempt < extensions.length) {
+        const nextExt = extensions[attempt];
+        const nextSrc = `/prodotti/${rowNumber}.${nextExt}`;
+        
+        imgElement.onload = function() {
+            imgElement.onload = null; // evita loop
+            updateProductImageCache(productId, nextSrc);
+        };
+        
+        imgElement.src = nextSrc;
+        imgElement.setAttribute('onerror', `handleImageError(this, ${productId}, '${productName.replace(/'/g, "\\'")}', ${rowNumber}, ${attempt + 1})`);
+    } else {
+        imgElement.onerror = null;
+        imgElement.onload = null;
+        const placeholder = `https://placehold.co/150x150?text=${encodeURIComponent(productName)}`;
+        imgElement.src = placeholder;
+        updateProductImageCache(productId, placeholder);
+    }
+}
+
+function updateProductImageCache(id, newSrc) {
     const product = products.find(p => p.id === id);
-    if (product) {
-        product.img = 'https://placehold.co/150x150?text=Immagine+non+disponibile';
+    if (product && product.img !== newSrc) {
+        product.img = newSrc;
         try {
-            localStorage.setItem('la_mezza_luna_products', JSON.stringify(products));
+            localStorage.setItem('la_mezza_luna_products_v3', JSON.stringify(products));
         } catch (e) {
-            console.error("Errore nel salvare la cache aggiornata con fallback:", e);
+            console.error("Errore nel salvare la cache aggiornata:", e);
         }
     }
 }
